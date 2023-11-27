@@ -1,0 +1,5 @@
+.terraform/
+.terraform.lock.hcl
+terraform-init.tfvars.json
+venv/
+ignore_*.py

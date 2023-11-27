@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: An execution role for a Lambda function launched by CloudFormation
+      ManagedPolicyArns:
+        - !Ref LambdaPolicy
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action:
+          - 'sts:AssumeRole'
+
+  LambdaPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Managed policy for a Lambda function launched by CloudFormation
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:ListBucket'
+              - 'schemas:DescribeRegistry'
+            # Updated to use a wildcard for Lambda function names
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+            # Updated to use a wildcard for Lambda function names
+            Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*:*'
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogGroup'
+            Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*'
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['',['/aws/lambda/', !Ref LambdaFunction]]
+      RetentionInDays: 30
+            
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Adds a random string value to the specified DynamoDB table
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Runtime: python3.8
+      Role: !GetAtt 'LambdaRole.Arn'
+      Timeout: 240
+      Code:
+        ZipFile: |
+            import boto3
+            from botocore.exceptions import ClientError
+            
+            
+            def create_boto3_client(cf_resource_type):
+                cf_to_boto3_mapping = {
+                    "AWS::S3": "s3",
+                    "AWS::EventSchemas": "schemas",
+                    # Add more mappings as needed
+                }
+                for cf_type, boto3_type in cf_to_boto3_mapping.items():
+                    if cf_type in cf_resource_type:
+                        return boto3.client(boto3_type)
+                raise ValueError(
+                    f"No Boto3 client mapping found for CloudFormation resource type: {cf_resource_type}"
+                )
+            
+            
+            def resource_exists(client, resource_type, resource_name):
+                try:
+                    if resource_type == "AWS::S3::Bucket":
+                        client.head_bucket(Bucket=resource_name)
+                    elif resource_type == "AWS::EventSchemas::Registry":
+                        client.describe_registry(RegistryName=resource_name)
+                    else:
+                        raise NotImplementedError(
+                            f"Check not implemented for resource type: {resource_type}"
+                        )
+                    return True
+                except ClientError as e:
+                    if resource_type == "AWS::S3::Bucket" and e.response["Error"]["Code"] == "404":
+                        return False
+                    elif (
+                        resource_type == "AWS::EventSchemas::Registry"
+                        and e.response["Error"]["Code"] == "NotFoundException"
+                    ):
+                        return False
+                    else:
+                        raise
+            
+            
+            def resolve_placeholders(value, account_id, region):
+                return value.replace("${AWS::AccountId}", account_id).replace(
+                    "${AWS::Region}", region
+                )
+            
+            
+            def lambda_handler(event, context):
+                print("Event:", event)
+                account_id = context.invoked_function_arn.split(":")[4]
+                region = event["region"]
+                fragment = event["fragment"]
+                resources = fragment.get("Resources", {})
+            
+                for resource_name, resource_info in resources.items():
+                    resource_type = resource_info.get("Type")
+                    resource_properties = resource_info.get("Properties", {})
+            
+                    for key, value in resource_properties.items():
+                        if "Name" in key:
+                            resolved_value = value
+                            if isinstance(value, dict) and "Fn::Sub" in value:
+                                resolved_value = resolve_placeholders(
+                                    value["Fn::Sub"], account_id, region
+                                )
+                            elif isinstance(value, str):
+                                resolved_value = resolve_placeholders(value, account_id, region)
+            
+                            if resolved_value:
+                                print(
+                                    f"Checking existence of {resource_type} with name: {resolved_value}"
+                                )
+                                client = create_boto3_client(resource_type)
+                                if resource_exists(client, resource_type, resolved_value):
+                                    fragment.setdefault("Conditions", {})["AlwaysFalse"] = {
+                                        "Fn::Equals": [True, False]
+                                    }
+                                    resources[resource_name]["Condition"] = "AlwaysFalse"
+            
+                fragment["Resources"] = resources
+                print("Modified Fragment:", fragment)
+                return {
+                    "requestId": event["requestId"],
+                    "status": "success",
+                    "fragment": fragment,
+                }
+
+
+  TransformFunctionPermissions:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: 'cloudformation.amazonaws.com'
+
+  Transform:
+    Type: AWS::CloudFormation::Macro
+    Properties:
+      Name: 'ConditionBuilder'
+      Description: Processes resource, add conditions to the template.
+      FunctionName: !GetAtt LambdaFunction.Arn
+
+Outputs:
+  CLI:
+    Description: Use this command to invoke the Lambda function
+    Value: !Sub |
+        aws lambda invoke --function-name ${LambdaFunction} --payload '{"null": "null"}' lambda-output.txt --cli-binary-format raw-in-base64-out

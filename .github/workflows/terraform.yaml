@@ -1,0 +1,56 @@
+name: "Cloudformation"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - opened
+
+permissions:
+      id-token: write   # This is required for requesting the JWT
+      contents: read    # This is required for actions/checkout
+
+jobs:
+  Cloudformation:
+    name: "Cloudformation"
+    runs-on: ubuntu-latest
+    permissions: write-all
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@master
+        with:
+          role-to-assume: ${{ secrets.CLOUDFORMATION_ROLE }}
+          role-session-name: GitHubOIDC
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy Cloudformation Macro Template
+        id: cloudformation-macro-base-resource
+        uses: aws-actions/aws-cloudformation-github-deploy@v1.0.4
+        with:
+          name: "cloudformation-macro-base-resource"
+          template: 1-cloudformation-macro-base-resource.yaml
+          no-fail-on-empty-changeset: "1"
+          capabilities: "CAPABILITY_IAM,CAPABILITY_NAMED_IAM"
+      
+      - name: Use Cloudformation Macro
+        id: cloudformation-macro-use
+        uses: aws-actions/aws-cloudformation-github-deploy@v1.0.4
+        with:
+          name: "cloudformation-macro-use"
+          template: 2-cloudformation-macro-use.yaml
+          no-fail-on-empty-changeset: "1"
+          capabilities: "CAPABILITY_IAM,CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND"
+      
+      - name: Use Cloudformation Macro
+        id: cloudformation-macro-use-no-resources-created
+        uses: aws-actions/aws-cloudformation-github-deploy@v1.0.4
+        with:
+          name: "cloudformation-macro-use-no-resources-created"
+          template: 3-cloudformation-macro-use-no-resources-created.yaml
+          no-fail-on-empty-changeset: "1"
+          capabilities: "CAPABILITY_IAM,CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND"

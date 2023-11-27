@@ -1,0 +1,13 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: tests String macro functions
+Resources:
+  S3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Sub "lambda-testevent-schemas-${AWS::AccountId}-${AWS::Region}"
+  LambdaEventSchemaRegistry:
+    Type: "AWS::EventSchemas::Registry"
+    Properties:
+      Description: "Lambda function test event schema registry"
+      RegistryName: "lambda-testevent-schemas"
+Transform: [ConditionBuilder]
